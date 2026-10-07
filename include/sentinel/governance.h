@@ -55,7 +55,7 @@ struct PolicyDecision {
 
 const CapabilityDescriptor *findCapability(const char *name);
 size_t capabilityCount();
-const CapabilityDescriptor &capabilityAt(size_t index);
+const CapabilityDescriptor *capabilityAt(size_t index);
 
 PolicyDecision evaluatePolicy(const JobRequest &job, const AuthorityGrant &grant);
 
