@@ -1,109 +1,247 @@
 ---
-name: Build and Push OR check-PR
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+name: Sentinel CI
 
 on:
   pull_request:
-    branches:
-      - main
-      - dev
-    paths:
-        - "**.yml"
-        - "**.h"
-        - "**.cpp"
-        - "**.py"
-        - "**.html"
-        - "**.css"
-        - "**.js"
-        - "**.ini"
-        - "**.json"
-        - "**.csv"
-
+    branches: [main]
+  push:
+    branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: sentinel-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.13"
+  PLATFORMIO_CORE_DIR: ${{ github.workspace }}/.pio-home
+
 jobs:
-  compile_sketch:
-    name: Build ${{ matrix.board.name }}
+  changes:
+    name: Classify changes
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      firmware: ${{ steps.classify.outputs.firmware }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - id: classify
+        name: Determine whether firmware build is required
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          firmware=true
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            base="${{ github.event.pull_request.base.sha }}"
+            head="${{ github.event.pull_request.head.sha }}"
+            files="$(git diff --name-only "${base}" "${head}")"
+          elif [[ "${{ github.event_name }}" == "push" && "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ]]; then
+            files="$(git diff --name-only "${{ github.event.before }}" "${{ github.sha }}")"
+          else
+            files=""
+          fi
+
+          if [[ -n "${files}" ]]; then
+            printf '%s\n' "${files}"
+            if grep -Eq '^(src/|include/|boards/|lib/|platformio\.ini$|[^/]+\.py$|ci/build_env\.sh$|ci/requirements-build\.txt$|\.github/workflows/PR_check\.yml$)' <<<"${files}"; then
+              firmware=true
+            else
+              firmware=false
+            fi
+          fi
+
+          echo "firmware=${firmware}" >> "${GITHUB_OUTPUT}"
+
+  workflow-lint:
+    name: Workflow and script lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Verify pinned workflow actions
+        run: |
+          python3 ci/check_workflow_pins.py \
+            .github/workflows/PR_check.yml \
+            .github/workflows/sentinel-deep.yml
+
+      - name: Validate CI scripts
+        run: |
+          set -euo pipefail
+          bash -n ci/build_env.sh ci/run_host_tests.sh
+          python3 -m py_compile ci/check_workflow_pins.py ci/validate_contracts.py
+
+      - name: Install verified actionlint
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="1.7.12"
+          archive="actionlint_${version}_linux_amd64.tar.gz"
+          curl --fail --silent --show-error --location \
+            --output "${archive}" \
+            "https://github.com/rhysd/actionlint/releases/download/v${version}/${archive}"
+          echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  ${archive}" | sha256sum --check --strict
+          tar -xzf "${archive}" actionlint
+          ./actionlint .github/workflows/PR_check.yml .github/workflows/sentinel-deep.yml
+
+  host-invariants:
+    name: Sentinel host invariants
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Compile and run strict plus sanitizer tests
+        run: bash ci/run_host_tests.sh
+
+  contracts:
+    name: Contract validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install contract validator
+        run: python -m pip install --disable-pip-version-check -r ci/requirements-contracts.txt
+
+      - name: Validate JSON contracts and negative cases
+        run: python ci/validate_contracts.py
+
+  static-analysis:
+    name: Sentinel static analysis
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install cppcheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cppcheck
+
+      - name: Analyze Sentinel boundary
+        run: |
+          cppcheck \
+            --enable=warning,performance,portability \
+            --std=c++17 \
+            --error-exitcode=1 \
+            --suppress=missingIncludeSystem \
+            -Iinclude \
+            include/sentinel src/sentinel tests/sentinel
+
+  firmware:
+    name: Firmware / ${{ matrix.env }}
+    needs: changes
+    if: needs.changes.outputs.firmware == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
     strategy:
       fail-fast: false
+      max-parallel: 3
       matrix:
-        board:
-          - {
-              name: "ESP32-S3 - M5Cardputer",
-              env: "m5stack-cardputer",
-              partitions: { bootloader_addr: "0x0000" },
-            }
-          - {
-              name: "ESP32 - M5StickCPlus2",
-              env: "m5stack-cplus2",
-              partitions: { bootloader_addr: "0x1000" },
-            }
-          - {
-              name: "Headless: ESP32-S3",
-              env: "esp32-s3-devkitc-1",
-              partitions: { bootloader_addr: "0x0" },
-            }
-          - {
-              name: "CoreS3",
-              env: "m5stack-cores3",
-              partitions: { bootloader_addr: "0x0" },
-            }
-          - {
-              name: "Launcher based environment: CYD",
-              env: "LAUNCHER_CYD-2432S028",
-              partitions: { bootloader_addr: "0x1000" },
-            }
-          - {
-              name: "ESP32-C5",
-              env: "nm-cyd-c5",
-              partitions: { bootloader_addr: "0x2000" },
-            }
-          - {
-              name: "ESP32-C6",
-              env: "arduino-nesso-n1",
-              partitions: { bootloader_addr: "0x2000" },
-            }
+        env:
+          - m5stack-cardputer
+          - m5stack-cplus2
+          - esp32-s3-devkitc-1
+          - lilygo-t-embed-cc1101
+          - reaper
+          - nm-cyd-c5
+          - arduino-nesso-n1
     steps:
-      - uses: actions/checkout@v4
-
-      - id: build
-        name: setup Python
-        uses: actions/setup-python@v5
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          python-version: "3.13"
+          persist-credentials: false
 
-      - name: Install build deps (multilib)
+      - name: Setup Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Cache PlatformIO packages
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            .pio-home
+            .pio/libdeps
+          key: ${{ runner.os }}-pio-${{ matrix.env }}-${{ hashFiles('platformio.ini', 'ci/requirements-build.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pio-${{ matrix.env }}-
+
+      - name: Install host build dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends gcc-multilib libc6-dev-i386
 
-      - name: Install PlatformIO Core
-        run: |
-          pip install platformio requests esptool intelhex
+      - name: Install pinned PlatformIO toolchain helpers
+        run: python -m pip install --disable-pip-version-check -r ci/requirements-build.txt
 
-          if [[ "${{ github.ref_type }}" == "tag" ]]; then
-            version=${{ github.ref_name }}
-          else
-            version="${GITHUB_SHA::7}"
+      - name: Compile firmware
+        run: bash ci/build_env.sh "${{ matrix.env }}"
+
+  sentinel-ci-gate:
+    name: Sentinel CI gate
+    if: always()
+    needs:
+      - changes
+      - workflow-lint
+      - host-invariants
+      - contracts
+      - static-analysis
+      - firmware
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Enforce required results
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          require_success() {
+            local name="$1"
+            local result="$2"
+            if [[ "${result}" != "success" ]]; then
+              echo "${name} did not succeed: ${result}" >&2
+              exit 1
+            fi
+          }
+
+          require_success "changes" "${{ needs.changes.result }}"
+          require_success "workflow-lint" "${{ needs.workflow-lint.result }}"
+          require_success "host-invariants" "${{ needs.host-invariants.result }}"
+          require_success "contracts" "${{ needs.contracts.result }}"
+          require_success "static-analysis" "${{ needs.static-analysis.result }}"
+
+          firmware_result="${{ needs.firmware.result }}"
+          if [[ "${firmware_result}" != "success" && "${firmware_result}" != "skipped" ]]; then
+            echo "firmware matrix did not succeed or skip cleanly: ${firmware_result}" >&2
+            exit 1
           fi
 
-          sed -i "s/-DBRUCE_VERSION=/-DBRUCE_VERSION='\"$version\"' ; /g" ./platformio.ini
-          sed -i "s/-DGIT_COMMIT_HASH='\"Homebrew\"'/\!echo '-DGIT_COMMIT_HASH=\\\\\\\\\"'\$\(git describe --always --dirty)'\\\\\\\\\"'/g" ./platformio.ini
-
-          cat ./platformio.ini
-
-      - name: Run Compile
-        run: |
-          platformio run -e ${{ matrix.board.env }}
-
-      - name: Upload ${{ matrix.board.name }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: Bruce-${{ matrix.board.env }}
-          path: Bruce-*.bin
-          retention-days: 5
-          if-no-files-found: error
+          echo "All required Sentinel CI gates passed."

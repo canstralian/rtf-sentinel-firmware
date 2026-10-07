@@ -1,0 +1,4 @@
+platformio==6.2.0
+requests==2.34.2
+esptool==5.4.0
+intelhex==2.3.0

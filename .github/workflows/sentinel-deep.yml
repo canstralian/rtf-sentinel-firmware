@@ -1,0 +1,101 @@
+---
+name: Sentinel Deep Build
+
+on:
+  schedule:
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sentinel-deep-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.13"
+  PLATFORMIO_CORE_DIR: ${{ github.workspace }}/.pio-home
+
+jobs:
+  host-invariants:
+    name: Host invariants
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Run host invariant tests
+        run: bash ci/run_host_tests.sh
+
+  firmware:
+    name: Deep / ${{ matrix.env }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        env:
+          - m5stack-cardputer
+          - m5stack-cplus2
+          - m5stack-core2
+          - m5stack-cores3
+          - esp32-s3-devkitc-1
+          - esp32-s3-devkitc-1-psram
+          - CYD-2432S028
+          - lilygo-t-embed-cc1101
+          - lilygo-t-deck
+          - lilygo-t-lora-pager
+          - reaper
+          - WaveSentry-R1
+          - esp32-c5
+          - nm-cyd-c5
+          - arduino-nesso-n1
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Cache PlatformIO packages
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            .pio-home
+            .pio/libdeps
+          key: ${{ runner.os }}-pio-deep-${{ matrix.env }}-${{ hashFiles('platformio.ini', 'ci/requirements-build.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pio-deep-${{ matrix.env }}-
+
+      - name: Install host build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gcc-multilib libc6-dev-i386
+
+      - name: Install pinned PlatformIO toolchain helpers
+        run: python -m pip install --disable-pip-version-check -r ci/requirements-build.txt
+
+      - name: Compile firmware
+        run: bash ci/build_env.sh "${{ matrix.env }}"
+
+  deep-gate:
+    name: Sentinel deep gate
+    if: always()
+    needs: [host-invariants, firmware]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Enforce deep results
+        run: |
+          set -euo pipefail
+          [[ "${{ needs.host-invariants.result }}" == "success" ]]
+          [[ "${{ needs.firmware.result }}" == "success" ]]
