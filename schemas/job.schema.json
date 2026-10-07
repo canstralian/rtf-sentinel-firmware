@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://red-team-forge.dev/sentinel/job.schema.json",
+  "title": "Sentinel Governed Job",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "job_id", "capability", "authority_ref", "limits"],
+  "properties": {
+    "version": {"const": 1},
+    "job_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 96
+    },
+    "capability": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(?:[._-][a-z0-9]+)*$"
+    },
+    "authority_ref": {
+      "description": "Opaque reference to authority validated outside the untrusted job body.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "scope": {
+      "type": "object",
+      "description": "Capability-specific scope. Unknown scope fields must be rejected by the capability adapter.",
+      "additionalProperties": true
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_runtime_ms", "max_output_bytes", "transmit"],
+      "properties": {
+        "max_runtime_ms": {"type": "integer", "minimum": 1},
+        "max_output_bytes": {"type": "integer", "minimum": 1},
+        "transmit": {"type": "boolean"}
+      }
+    }
+  }
+}
