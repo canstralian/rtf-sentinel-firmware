@@ -82,7 +82,11 @@ void test_registry_invariants() {
         CHECK(capability != nullptr);
         if (capability == nullptr) continue;
 
-        CHECK(capability->name != nullptr);
+        if (capability->name == nullptr) {
+            std::cerr << __FILE__ << ':' << __LINE__ << ": capability name is null\n";
+            ++failures;
+            continue;
+        }
         CHECK(capability->name[0] != '\0');
 
         if (capability->agent_exposed) {
