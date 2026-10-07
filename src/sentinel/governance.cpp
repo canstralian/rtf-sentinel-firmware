@@ -54,11 +54,9 @@ const CapabilityDescriptor *findCapability(const char *name) {
 
 size_t capabilityCount() { return kCapabilityCount; }
 
-const CapabilityDescriptor &capabilityAt(size_t index) {
-    // Callers should bound-check with capabilityCount(). Returning the first entry
-    // keeps this accessor deterministic on invalid input rather than dereferencing
-    // arbitrary memory.
-    return kCapabilities[index < kCapabilityCount ? index : 0];
+const CapabilityDescriptor *capabilityAt(size_t index) {
+    if (index >= kCapabilityCount) return nullptr;
+    return &kCapabilities[index];
 }
 
 PolicyDecision evaluatePolicy(const JobRequest &job, const AuthorityGrant &grant) {
