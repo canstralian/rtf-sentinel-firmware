@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://red-team-forge.dev/sentinel/capability.schema.json",
+  "title": "Sentinel Capability Descriptor",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["name", "class", "agent_exposed", "ceiling"],
+  "properties": {
+    "name": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(?:[._-][a-z0-9]+)*$"
+    },
+    "class": {
+      "enum": ["introspection", "observe", "local_action", "transmit", "excluded"]
+    },
+    "agent_exposed": {
+      "type": "boolean"
+    },
+    "ceiling": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_runtime_ms", "max_output_bytes", "transmit"],
+      "properties": {
+        "max_runtime_ms": {"type": "integer", "minimum": 0},
+        "max_output_bytes": {"type": "integer", "minimum": 0},
+        "transmit": {"type": "boolean"}
+      }
+    }
+  }
+}
